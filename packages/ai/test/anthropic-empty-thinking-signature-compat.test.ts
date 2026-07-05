@@ -32,10 +32,10 @@ function makeModel(allowEmptySignature?: boolean): Model<"anthropic-messages"> {
 	};
 }
 
-function makeContext(thinkingSignature: string): Context {
+function makeContext(thinkingSignature: string, thinking = "internal reasoning"): Context {
 	const assistant: AssistantMessage = {
 		role: "assistant",
-		content: [{ type: "thinking", thinking: "internal reasoning", thinkingSignature }],
+		content: [{ type: "thinking", thinking, thinkingSignature }],
 		provider: "xiaomi-token-plan-ams",
 		api: "anthropic-messages",
 		model: "mimo-v2.5-pro",
@@ -84,5 +84,14 @@ describe("Anthropic empty thinking signature compat", () => {
 		const payload = await capturePayload(makeModel(true), makeContext(" "));
 		const assistant = payload.messages?.find((message) => message.role === "assistant");
 		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
+	});
+
+	it("preserves empty-text thinking that carries a signature (display: omitted models)", async () => {
+		// On display-omitted models (fable-5, sonnet-5, opus-4-7+) thinking blocks
+		// arrive with empty text and the encrypted reasoning in the signature. The
+		// block must be echoed back for multi-turn continuity, not dropped.
+		const payload = await capturePayload(makeModel(), makeContext("sig-abc123", ""));
+		const assistant = payload.messages?.find((message) => message.role === "assistant");
+		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "", signature: "sig-abc123" }]);
 	});
 });

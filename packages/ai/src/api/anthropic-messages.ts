@@ -1080,11 +1080,20 @@ function convertMessages(
 						});
 						continue;
 					}
-					if (block.thinking.trim().length === 0) continue;
+					const signature =
+						typeof block.thinkingSignature === "string" && block.thinkingSignature.trim().length > 0
+							? block.thinkingSignature
+							: undefined;
+					// Skip only when the block carries nothing at all. With
+					// thinking.display "omitted" (the default on claude-fable-5,
+					// claude-sonnet-5, claude-opus-4-7+), thinking blocks arrive with
+					// empty text and the full encrypted reasoning in the signature —
+					// those must be echoed back for multi-turn reasoning continuity.
+					if (block.thinking.trim().length === 0 && signature === undefined) continue;
 					// If thinking signature is missing/empty (e.g., from aborted stream),
 					// convert to plain text for Anthropic. Some compatible providers emit
 					// and accept empty signatures, so let marked models preserve the block.
-					if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
+					if (signature === undefined) {
 						blocks.push(
 							allowEmptySignature
 								? {
@@ -1101,7 +1110,7 @@ function convertMessages(
 						blocks.push({
 							type: "thinking",
 							thinking: sanitizeSurrogates(block.thinking),
-							signature: block.thinkingSignature,
+							signature,
 						});
 					}
 				} else if (block.type === "toolCall") {

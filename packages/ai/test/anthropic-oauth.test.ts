@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { anthropicOAuth } from "../src/auth/oauth/anthropic.ts";
+import { anthropicOAuth, shouldUseManualCodeFlow } from "../src/auth/oauth/anthropic.ts";
 import type { AuthEvent, AuthPrompt } from "../src/auth/types.ts";
 
 const neverAbortedSignal = new AbortController().signal;
@@ -36,9 +36,11 @@ function getJsonBody(init?: RequestInit): Record<string, string> {
 describe.sequential("Anthropic OAuth", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 	});
 
 	it("keeps the localhost redirect_uri for manual callback login", async () => {
+		vi.stubEnv("PI_OAUTH_MANUAL_CODE", "0");
 		let authUrl = "";
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
 			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
@@ -73,6 +75,54 @@ describe.sequential("Anthropic OAuth", () => {
 		expect(credentials.access).toBe("access-token");
 		expect(credentials.refresh).toBe("refresh-token");
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("uses the code-display redirect for manual-code logins and matches it in the token exchange", async () => {
+		vi.stubEnv("PI_OAUTH_MANUAL_CODE", "1");
+		let authUrl = "";
+		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
+			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
+			const body = getJsonBody(init);
+			expect(body.grant_type).toBe("authorization_code");
+			expect(body.code).toBe("pasted-code");
+			expect(body.redirect_uri).toBe("https://platform.claude.com/oauth/code/callback");
+			return jsonResponse({
+				access_token: "access-token",
+				refresh_token: "refresh-token",
+				expires_in: 3600,
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const credentials = await anthropicOAuth.login({
+			signal: neverAbortedSignal,
+			notify: (event) => {
+				if (event.type === "auth_url") authUrl = event.url;
+			},
+			prompt: async (prompt) => {
+				if (prompt.type !== "manual_code") throw new Error(`Unexpected prompt: ${prompt.type}`);
+				const url = new URL(authUrl);
+				expect(url.searchParams.get("redirect_uri")).toBe("https://platform.claude.com/oauth/code/callback");
+				const state = url.searchParams.get("state");
+				if (!state) throw new Error("Missing OAuth state in auth URL");
+				return `pasted-code#${state}`;
+			},
+		});
+
+		expect(credentials.access).toBe("access-token");
+		expect(credentials.refresh).toBe("refresh-token");
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("selects the manual-code flow only for headless remote sessions or by override", () => {
+		expect(shouldUseManualCodeFlow("linux", { SSH_CONNECTION: "192.0.2.10 1 192.0.2.20 22" })).toBe(true);
+		expect(shouldUseManualCodeFlow("linux", { SSH_CLIENT: "192.0.2.10 1 22" })).toBe(true);
+		expect(shouldUseManualCodeFlow("linux", {})).toBe(false);
+		expect(shouldUseManualCodeFlow("linux", { SSH_CONNECTION: "x", DISPLAY: ":0" })).toBe(false);
+		expect(shouldUseManualCodeFlow("linux", { SSH_CONNECTION: "x", WAYLAND_DISPLAY: "wayland-0" })).toBe(false);
+		expect(shouldUseManualCodeFlow("darwin", { SSH_CONNECTION: "x" })).toBe(false);
+		expect(shouldUseManualCodeFlow("darwin", { PI_OAUTH_MANUAL_CODE: "1" })).toBe(true);
+		expect(shouldUseManualCodeFlow("linux", { SSH_CONNECTION: "x", PI_OAUTH_MANUAL_CODE: "0" })).toBe(false);
 	});
 
 	it("omits scope from refresh token requests", async () => {

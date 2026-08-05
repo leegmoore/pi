@@ -33,6 +33,16 @@ const CALLBACK_HOST = getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
+/**
+ * Anthropic's hosted code-display page, registered for this client id (it is
+ * how Claude Code's "paste code" flow works). After login the page shows the
+ * authorization code as `code#state` for manual copy — no callback server
+ * involved, which is the only workable shape when pi runs on a headless
+ * remote machine and the browser runs elsewhere. OAuth requires the token
+ * exchange to present the same redirect_uri as the authorize request, so the
+ * manual-code path must use this value on both sides.
+ */
+const CODE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const SCOPES =
 	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 async function getNodeApis(): Promise<NodeApis> {
@@ -231,7 +241,73 @@ async function exchangeAuthorizationCode(
 	};
 }
 
+/**
+ * Decide whether login should use the hosted code-display page instead of the
+ * loopback callback server. Defaults to manual on headless remote Linux
+ * (SSH session, no display server — the loopback redirect would target the
+ * wrong machine). PI_OAUTH_MANUAL_CODE=1/0 forces either mode.
+ */
+export function shouldUseManualCodeFlow(
+	platform: NodeJS.Platform = process.platform,
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	const override = env.PI_OAUTH_MANUAL_CODE;
+	if (override !== undefined && override !== "") {
+		return override !== "0" && override.toLowerCase() !== "false";
+	}
+	if (platform !== "linux") return false;
+	if (!env.SSH_CONNECTION && !env.SSH_CLIENT) return false;
+	if (env.DISPLAY || env.WAYLAND_DISPLAY) return false;
+	return true;
+}
+
+async function loginAnthropicManualCode(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	const { verifier, challenge } = await generatePKCE();
+	const manualAbort = new AbortController();
+	const onAbort = () => manualAbort.abort();
+	interaction.signal.addEventListener("abort", onAbort, { once: true });
+	if (interaction.signal.aborted) onAbort();
+	try {
+		const authParams = new URLSearchParams({
+			code: "true",
+			client_id: CLIENT_ID,
+			response_type: "code",
+			redirect_uri: CODE_REDIRECT_URI,
+			scope: SCOPES,
+			code_challenge: challenge,
+			code_challenge_method: "S256",
+			state: verifier,
+		});
+		interaction.notify({
+			type: "auth_url",
+			url: `${AUTHORIZE_URL}?${authParams.toString()}`,
+			instructions: "Open this URL in any browser. After login, Anthropic shows a code to copy — paste it here.",
+		});
+		const input = await interaction.prompt({
+			type: "manual_code",
+			message: "Paste the authorization code shown after login:",
+			placeholder: "code#state",
+			signal: manualAbort.signal,
+		});
+		const parsed = parseAuthorizationInput(input ?? "");
+		if (parsed.state && parsed.state !== verifier) throw new Error("OAuth state mismatch");
+		if (!parsed.code) throw new Error("Missing authorization code");
+		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
+		return await exchangeAuthorizationCode(
+			parsed.code,
+			parsed.state ?? verifier,
+			verifier,
+			CODE_REDIRECT_URI,
+			interaction.signal,
+		);
+	} finally {
+		interaction.signal.removeEventListener("abort", onAbort);
+		manualAbort.abort();
+	}
+}
+
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	if (shouldUseManualCodeFlow()) return loginAnthropicManualCode(interaction);
 	const { verifier, challenge } = await generatePKCE();
 	const server = await startCallbackServer(verifier);
 	const manualAbort = new AbortController();

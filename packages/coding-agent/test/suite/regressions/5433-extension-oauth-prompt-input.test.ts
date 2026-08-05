@@ -9,6 +9,10 @@ vi.mock("../../../src/utils/open-browser.ts", () => ({
 	openBrowser: vi.fn(),
 }));
 
+vi.mock("../../../src/utils/remote-oauth.ts", () => ({
+	remoteOAuthForwardCommand: vi.fn(() => "ssh -N -L 53692:127.0.0.1:53692 leemoore@lim-builder"),
+}));
+
 function createDialog(): LoginDialogComponent {
 	return new LoginDialogComponent(
 		{ requestRender: vi.fn() } as unknown as TUI,
@@ -68,6 +72,19 @@ describe("LoginDialogComponent OAuth prompts", () => {
 		expect(output).toContain("https://example.invalid/login");
 		expect(output).toContain("Authorize the extension");
 		expect(output).toContain("First prompt:");
+	});
+
+	test("shows remote OAuth forwarding guidance alongside the manual redirect fallback", () => {
+		const dialog = createDialog();
+
+		dialog.showAuth("https://example.invalid/login", "Authorize the extension");
+		dialog.showManualInput("Paste callback URL:");
+
+		const output = renderDialog(dialog).join("\n");
+		expect(output).toContain("Remote login detected");
+		expect(output).toContain("ssh -N -L 53692:127.0.0.1:53692 leemoore@lim-builder");
+		expect(output).toContain("Or paste the final redirect URL below");
+		expect(output).toContain("Paste callback URL:");
 	});
 
 	test("preserves neutral information and links when showing a prompt", () => {

@@ -1,6 +1,7 @@
 import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../../utils/open-browser.ts";
+import { remoteOAuthForwardCommand } from "../../../utils/remote-oauth.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -106,6 +107,25 @@ export class LoginDialogComponent extends Container implements Focusable {
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(new Text(theme.fg("warning", instructions), 1, 0));
+		}
+
+		const forwardCommand = remoteOAuthForwardCommand(url);
+		if (forwardCommand) {
+			this.contentContainer.addChild(new Spacer(1));
+			this.contentContainer.addChild(
+				new Text(theme.fg("warning", "Remote login detected. On your local computer, run:"), 1, 0),
+			);
+			this.contentContainer.addChild(new Text(theme.fg("accent", forwardCommand), 1, 0));
+			this.contentContainer.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						"Leave the tunnel open, then open the authorization URL. Or paste the final redirect URL below.",
+					),
+					1,
+					0,
+				),
+			);
 		}
 
 		openBrowser(url);
